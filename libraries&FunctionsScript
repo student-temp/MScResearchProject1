@@ -1,0 +1,86 @@
+# script to call the libraries and define the functions required to predict gene R2 values
+# call the libraries
+library(data.table)
+library(glmnet)
+library(ggplot2)
+library(reshape2)
+library(foreach)
+library(doMC)
+
+# set this to the number of CPU cores you have available, it makes the cross validation quicker
+registerDoMC(cores=4)
+
+# define the functions
+generate_fold_ids <- function(n_samples, n_folds=10) {
+  n <- ceiling(n_samples / n_folds)
+  fold_ids <- rep(1:n_folds, n)
+  sample(fold_ids[1:n_samples])
+}
+
+
+calc_R2 <- function(y, y_pred) {
+  tss <- sum(y**2)
+  rss <- sum((y - y_pred)**2)
+  1 - rss/tss
+}
+
+# this is mostly identical to "gtex_v7_nested_cv_elnet.R"
+# but I've added an argument to supply variant weights to elastic net
+nested_cv_elastic_net_perf <- function(x, y, n_samples, n_train_test_folds, n_k_folds, alpha, variant_penalties) {
+  # gets performance estimates for k-fold cross-validated elastic-net models
+  # splits data into n_train_test_folds disjoint folds, roughly equal in size
+  # for each fold, calculates a n_k_folds cross-validated elastic net model
+  # lambda parameter is cross validated
+  # get performance measures for how the model predicts on the hold-out fold
+  # get the coefficient of determination, R^2, and a p-value, where the null hypothesis
+  # is there is no correlation between prediction and observed
+
+  # the mean and standard deviation of R^2 over all folds is then reported, and the p-values
+  # are combined using Fisher's method
+  R2_folds <- rep(0, n_train_test_folds)
+  corr_folds <- rep(0, n_train_test_folds)
+  zscore_folds <- rep(0, n_train_test_folds)
+  pval_folds <- rep(0, n_train_test_folds)
+  # outer-loop split into training and test set
+  train_test_fold_ids <- generate_fold_ids(n_samples, n_folds=n_train_test_folds)
+  for (test_fold in 1:n_train_test_folds) {
+    train_idxs <- which(train_test_fold_ids != test_fold)
+    test_idxs <- which(train_test_fold_ids == test_fold)
+    x_train <- x[train_idxs, ]
+    y_train <- y[train_idxs]
+    x_test <- x[test_idxs, ]
+    y_test <- y[test_idxs]
+    # inner-loop - split up training set for cross-validation to choose lambda
+    cv_fold_ids <- generate_fold_ids(length(y_train), n_k_folds)
+    y_pred <- tryCatch({
+      # fit model with training data
+      fit <- cv.glmnet(x_train, y_train, nfolds = n_k_folds, alpha = alpha, type.measure='mse', foldid = cv_fold_ids, penalty.factor=variant_penalties)
+      # predict test data using model that had minimal mean-squared error in cross validation
+      predict(fit, x_test, s = 'lambda.min')},
+      # if the elastic-net model did not converge, predict the mean of the y_train (same as all non-intercept coef=0)
+      error = function(cond) rep(mean(y_train), length(y_test)))
+    R2_folds[test_fold] <- calc_R2(y_test, y_pred)
+    # get p-value for correlation test between predicted y and actual y
+    # if there was no model, y_pred will have var=0, so cor.test will yield NA
+    # in that case, give a random number from uniform distribution, which is what would
+    # usually happen under the null
+    corr_folds[test_fold] <- ifelse(sd(y_pred) != 0, cor(y_pred, y_test), 0)
+    zscore_folds[test_fold] <- atanh(corr_folds[test_fold])*sqrt(length(y_test) - 3)
+    # Fisher transformation
+    pval_folds[test_fold] <- ifelse(sd(y_pred) != 0, cor.test(y_pred, y_test)$p.value, runif(1))
+  }
+  R2_avg <- mean(R2_folds)
+  R2_sd <- sd(R2_folds)
+  rho_avg <- mean(corr_folds)
+  rho_se <- sd(corr_folds)
+  rho_avg_squared <- rho_avg**2
+  # Stouffer's method for combining z scores
+  zscore_est <- sum(zscore_folds) / sqrt(n_train_test_folds)
+  zscore_pval <- 2*pnorm(abs(zscore_est), lower.tail = FALSE)
+  # Fisher's method for combining p-values: https://en.wikipedia.org/wiki/Fisher%27s_method
+  pval_est <- pchisq(-2 * sum(log(pval_folds)), 2*n_train_test_folds, lower.tail = F)
+  list(R2_avg=R2_avg, R2_sd=R2_sd, pval_est=pval_est, rho_avg=rho_avg, rho_se=rho_se, rho_zscore=zscore_est, rho_avg_squared=rho_avg_squared, zscore_pval=zscore_pval)
+}
+
+# this has additional info about all the genes
+gene_info <- fread("gencode-gene-table.tsv")
