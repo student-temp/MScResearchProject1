@@ -1,0 +1,74 @@
+# script to load and save the gene expression data
+geneNames <- list.files("50genes", pattern = "*.vcf.gz", full.names = TRUE)
+geneNames <- substr(geneNames, 9, nchar(geneNames) - 7)
+
+for(i in 1:(length(geneNames))) {
+  gene_id_todo <- geneNames[i]
+  
+  # load and convert the expression data (these are normalised expression values from the GTEx website)
+  exp <- fread("Whole_Blood.v8.normalized_expression.bed.gz")
+  gene_tss <- exp[gene_id==gene_id_todo,start]
+  exp <- t(exp[gene_id==gene_id_todo, 5:ncol(exp)])
+  expression_y <- exp[,1]
+  whole_blood_samples <- rownames(exp)
+  
+  # load the PEER factors - these are hidden factors (like principal components) and are used to adjust 
+  # for noise in the RNA-seq expression values, we use linear regression to regress out the effect
+  # of noise on our expression values
+  # do this for all genes save in the final form using saveRDS() so you don't need to do all this 
+  # conversion and adjustment separately for every gene every time you run elastic net
+  hf <- fread("Whole_Blood.v8.covariates.txt")
+  hf <- hf[ID %like% "InferredCov"]
+  hf <- as.matrix(hf[,2:ncol(hf)])
+  hf <- t(hf[,whole_blood_samples])
+  dim(hf)
+  f <- lm(expression_y ~ hf)
+  adjusted_expression_y <- f$residuals
+  
+  # save "adjusted_expression_y" as .rds file
+  saveRDS(adjusted_expression_y, paste("adjustedExpressionFiles/aey", geneNames[i], ".rds", sep = ""))
+  
+  # script to load the genotype data
+  # we subset the variants for those with a minor allele frequency > 0.01
+  # it would be good to load and convert these extractions into the final matrix form and then save using saveRDS()
+  # so you don't need to do this every time
+  vcf <- fread(sprintf("50genes/%s.vcf.gz",gene_id_todo),skip="#CHROM")
+  cnames <- colnames(vcf)
+  allele_freqs <- vcf[,as.numeric(sub("^.+AF=(\\d+\\.\\d+).+$","\\1",INFO))]
+  dim(vcf)
+  maf_threshold <- 0.01
+  vcf <- vcf[allele_freqs>maf_threshold & allele_freqs<(1-maf_threshold),]
+  variant_ids <- vcf[,ID]
+  dim(vcf)
+  vcf <- vcf[,10:length(cnames)]
+  dim(vcf)
+  vcf <- t(as.matrix(vcf[,whole_blood_samples,with=F]))
+  colnames(vcf) <- variant_ids
+  dim(vcf)
+  
+  # here we create a numeric version of the character genotype matrix
+  genotype_matrix_x <- matrix(nrow=nrow(vcf),ncol=ncol(vcf))
+  genotype_matrix_x[vcf=="0|0"] <- 0
+  genotype_matrix_x[vcf=="0|1"] <- 1
+  genotype_matrix_x[vcf=="1|0"] <- 1
+  genotype_matrix_x[vcf=="1|1"] <- 2
+  genotype_matrix_x[vcf==".|."] <- NA
+  rownames(genotype_matrix_x) <- rownames(vcf)
+  colnames(genotype_matrix_x) <- colnames(vcf)
+  
+  # check data is correct between text and numeric genotypes
+  vcf[100:110,100:104]
+  genotype_matrix_x[100:110,100:104]
+  
+  #remove variants with any missing genotypes
+  nas_here <- apply(genotype_matrix_x,MARGIN = 2, function(genos) {sum(is.na(genos))})
+  sum(nas_here>0)
+  genotype_matrix_x <- genotype_matrix_x[,nas_here==0]
+  dim(genotype_matrix_x)
+  
+  #check the subject IDs match between genotypes and gene expression
+  all(rownames(genotype_matrix_x)==whole_blood_samples)
+  
+  # save "genotype_matrix_x" as a .rds file
+  saveRDS(genotype_matrix_x, paste("genotypeMatrices/gMat", geneNames[i], ".rds", sep = ""))
+}
