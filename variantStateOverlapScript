@@ -1,0 +1,67 @@
+library(data.table)
+library(R.utils)
+
+states <- fread("E062_15_coreMarks_mnemonics.bed.gz")
+names(states) <- c("chromosome_name", "state_start", "state_end", "state")
+# bed files used 0-based coordinate encoding, we will convert to 1-based
+states[ ,state_start:=state_start + 1L]
+
+geneFileNames <- list.files("50genes", pattern = "*.vcf.gz", full.names = TRUE)
+
+group1 <- c("1_TssA", "2_TssAFlnk", "3_TxFlnk")
+group2 <- c("6_EnhG", "7_Enh")
+group3 <- c("4_Tx", "5_TxWk")
+group4 <- c("8_ZNF/Rpts", "9_Het")
+group5 <- c("13_ReprPC", "12_EnhBiv", "11_BivFlnk", "10_TssBiv", "14_ReprPCWk")
+group6 <- c("15_Quies")
+
+for(i in 1:(length(geneFileNames))) {
+  # vcf files are 1-based coordinates, so no need to convert
+  variants <- fread(geneFileNames[i], skip = "#CHROM")
+  # this just renames some columns to make them less ambiguous
+  setnames(variants,c("#CHROM","POS"),c("variant_chrom","variant_end"))
+  variants <- variants[,.(variant_chrom,variant_end,ID,REF,ALT,INFO)]
+  variants[,variant_start:=variant_end]
+  # the vcf usees chromosome names with a "chr" prefix, we remove this to match with the bed file of states
+  # variants[,variant_chrom:=sub("chr","",variant_chrom)]
+  
+  # this is the most important step to make foverlaps work
+  # you need to set a key on the chromosome, start and end, in that order
+  # see ?foverlaps for more detail
+  setkey(states,chromosome_name,state_start,state_end)
+  setkey(variants,variant_chrom,variant_start,variant_end)
+  
+  # we should only get one state per variant, so the number of rows
+  # before and after should be identical
+  dim(variants)
+  annotated_variants <- foverlaps(variants,states, nomatch = 0)
+  dim(annotated_variants)
+  
+  variant_penalty <- c()
+  
+  for(j in 1:nrow(annotated_variants)) {
+    if(is.na(match(annotated_variants[j, 4], group1)) == 0) {
+      variant_penalty <- append(variant_penalty, 6)
+    }
+    if(is.na(match(annotated_variants[j, 4], group2)) == 0) {
+      variant_penalty <- append(variant_penalty, 5)
+    }
+    if(is.na(match(annotated_variants[j, 4], group3)) == 0) {
+      variant_penalty <- append(variant_penalty, 4)
+    }
+    if(is.na(match(annotated_variants[j, 4], group4)) == 0) {
+      variant_penalty <- append(variant_penalty, 3)
+    }
+    if(is.na(match(annotated_variants[j, 4], group5)) == 0) {
+      variant_penalty <- append(variant_penalty, 2)
+    }
+    if(is.na(match(annotated_variants[j, 4], group6)) == 0) {
+      variant_penalty <- append(variant_penalty, 1)
+    }
+  }
+  
+  annotated_variants <- cbind(annotated_variants, variant_penalty)
+  
+  # save the annotated variant data frame as a .rds file
+  saveRDS(annotated_variants, file = (paste("annotated_variants/av", substr(geneFileNames[i], 9, nchar(geneFileNames[i]) - 7), ".rds", sep = "")))
+}
