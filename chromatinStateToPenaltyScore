@@ -1,0 +1,35 @@
+# define the six groups of chromatin states
+group1 <- c("1_TssA", "2_TssAFlnk", "3_TxFlnk")
+group2 <- c("6_EnhG", "7_Enh")
+group3 <- c("4_Tx", "5_TxWk")
+group4 <- c("8_ZNF/Rpts", "9_Het")
+group5 <- c("13_ReprPC", "12_EnhBiv", "11_BivFlnk", "10_TssBiv", "14_ReprPCWk")
+group6 <- c("15_Quies")
+
+# create a blank variable of variant_weight
+variant_weight <- c()
+
+# assign each variant a penalty score based on their chromatin state
+for(j in 1:nrow(annotated_variants)) {
+  if(is.na(match(annotated_variants[j, 4], group1)) == 0) {
+    variant_weight <- append(variant_weight, 1/6)
+  }
+  if(is.na(match(annotated_variants[j, 4], group2)) == 0) {
+    variant_weight <- append(variant_weight, 2/6)
+  }
+  if(is.na(match(annotated_variants[j, 4], group3)) == 0) {
+    variant_weight <- append(variant_weight, 3/6)
+  }
+  if(is.na(match(annotated_variants[j, 4], group4)) == 0) {
+    variant_weight <- append(variant_weight, 4/6)
+  }
+  if(is.na(match(annotated_variants[j, 4], group5)) == 0) {
+    variant_weight <- append(variant_weight, 5/6)
+  }
+  if(is.na(match(annotated_variants[j, 4], group6)) == 0) {
+    variant_weight <- append(variant_weight, 6/6)
+  }
+}
+
+# add this penalty score to the existing table of annotated variants
+annotated_variants <- cbind(annotated_variants, variant_weight)
