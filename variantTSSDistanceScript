@@ -1,0 +1,79 @@
+library(data.table)
+library(R.utils)
+
+states <- fread("E062_15_coreMarks_mnemonics.bed.gz")
+names(states) <- c("chromosome_name", "state_start", "state_end", "state")
+#bed files used 0-based coordinate encoding, we will convert to 1-based
+states[ ,state_start:=state_start + 1L]
+
+# load tssMat.rds to access the transcription start site for each gene
+tssMat <- readRDS("tssMat.rds")
+
+# create vectors containing all the gene id's and gene file names
+geneFileNames <- list.files("50genes", pattern = "*.vcf.gz", full.names = TRUE)
+geneNames <- substr(geneFileNames, 9, nchar(geneFileNames) - 7)
+
+noGenes <- length(geneNames)
+
+for(i in 1:(noGenes)) {
+  # vcf files are 1-based coordinates, so no need to convert
+  variants <- fread(geneFileNames[i], skip = "#CHROM")
+  # this just renames some columns to make them less ambiguous
+  setnames(variants,c("#CHROM","POS"),c("variant_chrom","variant_end"))
+  variants <- variants[,.(variant_chrom,variant_end,ID,REF,ALT,INFO)]
+  variants[,variant_start:=variant_end]
+  # the vcf usees chromosome names with a "chr" prefix, we remove this to match with the bed file of states
+  # variants[,variant_chrom:=sub("chr","",variant_chrom)]
+  
+  # this is the most important step to make foverlaps work
+  # you need to set a key on the chromosome, start and end, in that order
+  # see ?foverlaps for more detail
+  setkey(states,chromosome_name,state_start,state_end)
+  setkey(variants,variant_chrom,variant_start,variant_end)
+  
+  # we should only get one state per variant, so the number of rows
+  # before and after should be identical
+  dim(variants)
+  annotated_variants <- foverlaps(variants,states, nomatch = 0)
+  dim(annotated_variants)
+  
+  # add another colum to the data frame containing each variant's distance from the transcription start site of
+  # their target gene
+  d.tss <- c()
+  for(j in 1:(nrow(annotated_variants))) {
+    d.tss <- append(d.tss, (annotated_variants$variant_start[j]) - (as.numeric(tssMat[i,2])))
+    d.tss <- abs(d.tss)
+  }
+  
+  # create a new data frame that contains the gene variant id, its start site, distance from the transcription
+  # start site and its inverse distance from the transcription start site
+  annotated_variants <- cbind(annotated_variants$ID, annotated_variants$variant_start, d.tss)
+  
+  # creating the inverse distance from the transcription start site
+  up.d.tss <- sort(d.tss)
+  decIndex <- c()
+  
+  for(k in 1:(length(d.tss))) {
+    decPos <- match((up.d.tss[length(up.d.tss)+1-k]), (d.tss))
+    decIndex <- append(decIndex, decPos)
+  }
+  
+  i.d.tss <- c()
+  
+  for(k in 1:(length(d.tss))) {
+    i.d.tss[decIndex[k]] <- up.d.tss[k]
+  }
+  
+  while((sum(is.na(i.d.tss))) > 0) {
+    naIndex <- match(NA, i.d.tss)
+    naBefore <- i.d.tss[naIndex-1]
+    i.d.tss[naIndex] <- naBefore
+  }
+  
+  annotated_variants <- cbind(annotated_variants, i.d.tss)
+  
+  colnames(annotated_variants) <- c("variant_id", "variant_start", "d.tss", "i.d.tss")
+  
+  # save the annotated_variants object as an .rds file
+  saveRDS(annotated_variants, file = (paste("annotated_variants/av", substr(geneFileNames[i], 9, nchar(geneFileNames[i]) - 7), ".rds", sep = "")))
+}
