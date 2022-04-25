@@ -1,0 +1,71 @@
+aeyFileNames <- list.files("adjustedExpressionFiles", pattern = "*.rds", full.names = TRUE)
+gMatFileNames <- list.files("genotypeMatrices", pattern = "*.rds", full.names = TRUE)
+avFileNames <- list.files("annotated_variants", pattern = "*.rds", full.names = TRUE)
+r2Results <- c()
+noGenes <- length(aeyFileNames)
+
+for(i in 1:(noGenes)) {
+  adjusted_expression_y <- readRDS(aeyFileNames[i])
+  genotype_matrix_x <- readRDS(gMatFileNames[i])
+  avFile <- readRDS(avFileNames[i])
+  
+  # script to assign penalty values and run elastic net prediction
+  #set the elastic net parameters
+  n_samples <- length(adjusted_expression_y)
+  n_train_test_folds <- 5
+  n_k_folds <- 10
+  alpha <- 0.5
+  
+  # here is where you can define variant penalties
+  # wee https://glmnet.stanford.edu/articles/glmnet.html#other-function-arguments
+  # a penalty of 0 means that variant will always be present in the final predictive model
+  # all supplied penalty values are scaled to sum to the total number of variants by the cv.glmnet function
+  # so it doesn't matter how big or small you make them, its about the ratio between high and low penalties
+  
+  # these are the standard variant penalties (all variants equally penalised)
+  penalties <- rep(1, times=ncol(genotype_matrix_x))
+  
+  # this function does 5-fold cross-validation on the data to determine an average R2 value (predictive performance measure)
+  # x, y, n_samples, n_train_test_folds, n_k_folds, alpha
+  performance <- nested_cv_elastic_net_perf(x=genotype_matrix_x, 
+                                            y=adjusted_expression_y, 
+                                            n_samples = n_samples, 
+                                            n_train_test_folds = n_train_test_folds, 
+                                            n_k_folds = n_k_folds, 
+                                            alpha = alpha,
+                                            variant_penalties = penalties)
+  
+  #this should be similar to the value of "cv_R2_avg" or "pred_perf_r2" from Predixcan
+  #it is final performance measure which are trying to improve
+  noPenR2 <- performance$R2_avg
+  
+  
+  # assigning penalty scores to the different genetic variants
+  penalties <- c()
+  
+  for(k in 1:(ncol(genotype_matrix_x))) {
+    annotatedIndex <- match((colnames(genotype_matrix_x)[k]), avFile[,1])
+    penalties <- append(penalties, as.numeric(avFile[annotatedIndex,4]))
+  }
+  
+  
+  # randomly assigned penalties from 1 - 6
+  #penalties <- sample(1:6, size = ncol(genotype_matrix_x), replace = T)
+  
+  # this function does 5-fold cross-validation on the data to determine an average R2 value (predictive performance measure)
+  # x, y, n_samples, n_train_test_folds, n_k_folds, alpha
+  performance <- nested_cv_elastic_net_perf(x=genotype_matrix_x, 
+                                            y=adjusted_expression_y, 
+                                            n_samples = n_samples, 
+                                            n_train_test_folds = n_train_test_folds, 
+                                            n_k_folds = n_k_folds, 
+                                            alpha = alpha,
+                                            variant_penalties = penalties)
+  
+  #this should be similar to the value of "cv_R2_avg" or "pred_perf_r2" from Predixcan
+  #it is final performance measure which are trying to improve
+  penR2 <- performance$R2_avg
+  d <- cbind(noPenR2, penR2)
+  r2Results <- rbind(r2Results, d)
+  print(paste((i * (100/noGenes)), "%", sep = ""))
+}
